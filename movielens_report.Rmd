@@ -752,14 +752,14 @@ This approach results in a RMSE of `r round(fmatrix_rmse, 3)`, a material improv
 
 ```{r final summary table, echo=FALSE}
 #Create the results vector and compare to actuals
-rmse_results <- bind_rows(tibble(method = "Movie + user effect model + genre effect, penalised, separate lambdas", RMSE = mugeffect_rmse),
+rmse_results <- bind_rows(tibble(method = "Movie + user effect model + genre effect, penalised, separate lambdas, constrained", RMSE = mugceffect_rmse),
                           tibble(method = "Matrix factorisation", RMSE = fmatrix_rmse))
 
 rm(tuned_set, validation_set, edx_set, validation_fact, edx_fact)
 ``` 
 We have looked at two possible approaches to estimate the ratings a specific user in our user base would give to a specific movie in our library:  
 
-* One based on a linear regression, where we ended with an RMSE of `r round(mugeffect_rmse, 3)`  
+* One based on a linear regression, where we ended with an RMSE of `r round(mugceffect_rmse, 3)`  
 * One based on a matrix factorization, where we ended with an RMSE of `r round(fmatrix_rmse, 3)`  
 
 Of these two approaches, we can see the matrix factorization being the most accurate, and would prefer it over the linear regression approach should we need to be making predictions.  
