@@ -1,0 +1,785 @@
+---
+title: "Movielens capstone project"
+author: "S. Pariente"
+date: "03/07/2021"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(caret)
+library(dslabs)
+library(lubridate)
+
+knitr::opts_chunk$set(message = FALSE)
+
+```
+
+# Introduction  
+## Synopsis  
+
+```{r intro, echo=FALSE}
+load(file = "movielens.RData")
+load(file = "rmse_results.RData")
+
+nmovies <- n_distinct(movielens$movieId)
+nusers <-  n_distinct(movielens$userId)
+
+sparsity <- nrow(movielens) / (nusers * nmovies)
+```
+
+This project, part of the HarvardX PH125.9x course, is aimed at exploring possible options to solve a recommendation problem. Using the Movielens 10M dataset, showing ratings by `r format(nusers, big.mark = ",")` users of `r format(nmovies, big.mark = ",")` movies, our goal is to minimize the residual mean squared error between predicted ratings and actual ratings. To this end, and after a preliminary analysis of the data, two main approaches will be used: an iterative linear regression approach, which results in a RMSE of `r round(rmse_results$RMSE[1], 3)`, and a matrix factorization approach, which yields a RMSE of `r round(rmse_results$RMSE[2], 3)`.  
+  
+## Recommendation systems
+Recommendation systems are a common topic in data science, where the goal is to complete a sparse matrix, using available information contained within it. In practice, it can be for instance used to assess the rating a user would give to a specific item, based on ratings similar users have given it, to determine which item could be recommended to this user.  
+Our specific problem is based on a series of Netflix challenges, where the goal was to create an algorithm fit for predicting the rating a user would give to movies on the platform.  
+
+## Overview of the data  
+For the purposes of this project, the Movielens 10M data set will be used. This data set contains 10 million ratings given by `r format(nusers, big.mark = ",")` users to `r format(nmovies, big.mark = ",")` movies in total. As is needed for prediction algorithms, the data set has been split between a training set and a testing set, the latter containing 10% of the total data, i.e. 1 million ratings in total. Given the number of users and movies, a total of `r format(nusers*nmovies, big.mark = ",")` possible ratings, or $\{user, movie\}$ couples can be envisioned, meaning our 10-million-long data set only represents `r round(sparsity, 3) * 100` % of the possibles, hence the usefulness of a recommendation system to estimate the missing data.  
+
+# Data exploration  
+## Structure of the data  
+The Movielens 10M data set contains around 10 million observations, i.e. individual ratings, given by `r format(nusers, big.mark = ",")` users to a total of `r format(nmovies, big.mark = ",")`, each containing:
+
+* A unique user ID (integer)  
+* A unique movie ID (integer)  
+* A rating, on a scale from 0 to 5, with half decimals allowed from 2002 onward  
+* A timestamp, representing the date at which the rating was given (integer)  
+* A movie title, including the year of release between parentheses  
+* The genre or genres associated with the movie, each separated by a pipe symbol (|)  
+
+```{r age range, echo=FALSE}
+range_m <- movielens %>%
+  mutate(year = as.integer(
+    str_remove_all(
+      str_extract(title, pattern = "\\(\\d+\\)$"), 
+      pattern = "\\D"))) %>%
+  pull(year) %>%
+  range()
+
+range_r <- movielens %>%
+  mutate(date = as_datetime(timestamp),
+         year_rat = year(date)) %>%
+  pull(year_rat) %>%
+  range()
+```
+
+## Overview or ratings given  
+The rated movies were released between `r range_m[1]` and `r range_m[2]`, and the ratings given between `r range_r[1]` and `r range_r[2]`. The ratings are distributed as follows, over the full sample:  
+```{r ratings overview, echo=FALSE}
+movielens %>%
+  ggplot(aes(x = rating)) +
+  geom_bar() +
+  labs(x = "Rating", 
+       y = "Number of observations")
+```  
+From this bar chart, it seems that half-numeric ratings are given with a lower frequency than integer ones. However, as stated earlier, half-numeric ratings only became available starting in 2002. If we separate the data between ratings given earlier than 2002 and later, we can see a smoother picture overall.  
+```{r ratings date, echo=FALSE}
+label_y <- c("FALSE" = "2002 and earlier", "TRUE" = "After 2002")
+
+movielens %>%
+  mutate(date = as_datetime(timestamp),
+         year_rat = year(date),
+         year_sep = (year(date) > 2002)) %>%
+  ggplot(aes(x = rating)) +
+  geom_bar() +
+  facet_wrap(~ year_sep,
+             labeller = labeller(year_sep = label_y)) +
+  labs(x = "Rating", 
+       y = "Number of observations")
+```  
+From this data, we can see that the ratings are not distributed evenly, and seem to be skewed towards the upper half of the scale. 
+```{r average, echo=FALSE}
+r_mean <- mean(movielens$rating)
+```  
+The average rating given by users is `r round(r_mean,3)`, as expected above the middle of the scale (2.5).  
+  
+## Sources of variability in ratings  
+### Movies and users  
+
+Looking at the data, we can see that average ratings vary materially between users and between movies, as shown in the following tables, showing the top 20 users or movies, by number of ratings.  
+\newpage
+```{r ratings tables, echo=FALSE}
+movielens %>%
+  group_by(userId) %>%
+  summarize(mean = mean(rating), 
+         n = n()) %>%
+  slice_max(n = 20, order_by = n) %>%
+  rename("User ID" = userId,
+         "Average rating" = mean,
+         "Number of ratings" = n) %>%
+  knitr::kable(caption = "Top 20 users, by number of ratings")
+
+movielens %>%
+  group_by(movieId, title) %>%
+  summarize(mean = mean(rating), 
+         n = n())  %>%
+  ungroup() %>%
+  slice_max(n = 20, order_by = n) %>%
+  rename("Movie ID" = movieId,
+         "Title" = title,
+         "Average rating" = mean,
+         "Number of ratings" = n) %>%
+  knitr::kable(caption = "Top 20 movies, by number of ratings")
+```    
+Both of these drivers can be expected, as movies have varying levels of quality, and users have different personal rating scales.  
+  
+### Release date  
+
+Other sources of variability in the ratings include the date of release, although this is of limited value considering the unequal distribution of movies reviewed. It may simply mean that a higher standard was used when selecting older movies to be on on the platform, compared to recent releases.   
+```{r movie release, echo=FALSE}
+p1 <- movielens %>%
+  mutate(year = as.integer(
+    str_remove_all(
+      str_extract(title, pattern = "\\(\\d+\\)$"), 
+      pattern = "\\D"))) %>%
+  ggplot(aes(x = year)) +
+  geom_bar() +
+  labs(x = "Movie release year",
+       y = "Number of ratings")
+
+p2 <- movielens %>%
+  mutate(year = as.integer(
+    str_remove_all(
+      str_extract(title, pattern = "\\(\\d+\\)$"), 
+      pattern = "\\D"))) %>%
+  group_by(year) %>%
+  summarize(mean = mean(rating)) %>%
+  ggplot(aes(x = year, y = mean)) +
+  geom_point() +
+  labs(x = "Movie release year",
+       y = "Average rating given")
+
+gridExtra::grid.arrange(p1, p2)
+```  
+  
+### Movie genre  
+
+Specific movie genres also seem to be rated higher than others, as shown in the following exhibit.  
+```{r movie genres, echo=FALSE}
+load(file = "movielens_genres.RData")
+
+movielens_genres %>%
+  filter(genres != "(no genres listed)") %>%
+  group_by(genres) %>%
+  summarize(mean = mean(rating)) %>%
+  ggplot(aes(x = reorder(genres, mean), y = mean)) + 
+  geom_point() +
+  geom_hline(yintercept = r_mean, col = "red") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  labs(x = "Movie genre",
+       y = "Average rating") +
+  geom_text(aes(x = 3, y = 3.55, label = "Overall average"), col = "red")
+```  
+However, the average rating of a genre is the average of all ratings given to movies in this genre, so this adds little information to the movie to movie variability previously mentioned. Genres can nevertheless be used to assess user preference: we can expect some users will like specific genres more than others. An example, comparing the top 5 users based on the number of ratings given, show this difference between how they rate different movie genres, which may not be entirely explained by a difference in overall rating scales.  
+```{r movie genre user, echo=FALSE}
+top_5_u <- movielens %>%
+  group_by(userId) %>%
+  summarize(n = n()) %>%
+  slice_max(n = 5, order_by = n) %>%
+  pull(userId)
+
+movielens_genres %>%
+  filter(userId %in% top_5_u,
+         genres != "(no genres listed)")%>%
+  group_by(userId, genres) %>%
+  summarize(mean = mean(rating)) %>%
+  mutate(userId = as.factor(userId)) %>%
+  ggplot(aes(x = genres, y = mean, col = userId)) + 
+  geom_point() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  labs(x = "Movie genre",
+       y = "Average rating",
+       color = "User ID")
+```  
+
+### Rating date  
+
+Another source of variability we will explore here is the date at which the rating has been given. As can be expected, external factors can influence the rating a movie receives, such as an actor's appearance in another popular movie or show. These factors change through time, leading to scores that are not stable through time. This time impact also varies from movie to movie, as can be seen in the following point chart, showing data from the 5 most rated movies in the data set, using averages within time buckets of 6 months each.  
+```{r movie time effect, echo=FALSE}
+top_5_m <- movielens %>%
+  group_by(movieId) %>%
+  summarize(n = n()) %>%
+  slice_max(n = 5, order_by = n) %>%
+  pull(movieId)
+
+movielens %>% 
+  mutate(date = as_datetime(timestamp)) %>% 
+  filter(movieId %in% top_5_m) %>%
+  mutate(month = round_date(date, unit = "6 month"),
+          movieId = as.factor(movieId)) %>%
+  group_by(movieId, month) %>%
+  summarise(avg_rating = mean(rating)) %>%
+  ggplot(aes(x = month, y = avg_rating, col = movieId)) +
+  geom_point() +
+  geom_smooth(formula = y ~ x, method = "loess", span = 0.4) +
+  labs(x = "Rating date",
+       y = "Average rating",
+       color = "Movie ID")
+```  
+  
+Having identified potential sources of variability in the ratings, we now move on to the modeling phase.  
+  
+# Modeling  
+Our aim in this section is to estimate the rating a user *u* will give to a movie *i*, for any couple $\{i, j\}$ in our data set. To this end, the data has been split into two subsets:  
+
+* A training set, containing 90% of the total observations, which will be used to train our algorithms  
+* A test set, containing the remaining 10% of the data, which will be used to assess how accurate our algorithms are.  
+
+Give that we are not looking at categorical outcomes, but numerical ones (rating on a range from 0 to 5), we need to define what accuracy means, which will be done through a regression loss function: the residual mean squared error (RMSE). This function is defined as follows:  
+$$RMSE = \sqrt{\frac{1}{N}\sum_{u,i}{(\hat{y}_{u,i} - y_{u,i})^2}}$$
+where $\hat{y}_{u,i}$ represents the predicted value of $y_{u,i}$, i.e. the rating given by user u to movie i, and $N$ the sample size.  
+Our objective hence becomes finding the algorithm that minimizes the RMSE over the test set. 
+```{r RMSE, echo=FALSE}
+RMSE <- function(true_ratings, predicted_ratings){
+  sqrt(mean((true_ratings - predicted_ratings)^2))
+}
+```  
+
+## Naive Bayes  
+As a first approach, we may consider that the ratings can be approximated by their average, and the variability is only linked to random noise. Our model can then be written as:  
+$$Y_{u,i} = \mu + \varepsilon_{u,i}$$
+where $\mu$ represents the average rating of all movies and $\varepsilon_{u,i}$ are independent random errors sampled from the same distribution centered at 0.  
+```{r mu, echo=FALSE}
+load(file = "edx.RData")
+load(file = "validation.RData")
+
+mu <- mean(edx$rating)
+```  
+By using the training set to determine $\mu$, we get a value of `r round(mu, 3)`, which we will use to assess the accuracy of our model, by comparing to the actual values on the test set.  
+```{r naive bayes, echo=FALSE}
+naive_rmse <- RMSE(validation$rating, mu)
+
+rmse_results <- tibble(method = "Just the average", RMSE = naive_rmse)
+```    
+This simple model yields a RMSE of `r round(naive_rmse, 3)`, the standard deviation of our sample.
+
+## Linear regression  
+To improve on the initial naive approach, we will consider the drivers of variability we identified earlier.  
+  
+### Movie effect  
+
+Our objective is to model the rating a specific user would give to a specific movie. To improve on our initial model, we will consider that every movie has a specific rating, different from the overall average rating. The model becomes:
+$$Y_{u,i} = \mu + b_i + \varepsilon_{u,i}$$
+where $b_i$ represents the difference of rating of movie i compared to the overall expected rating $\mu$.  
+To approach the value of $b_i$ for a movie, we will consider that it is equal to $\frac{1}{N}\sum_u{Y_{u,i}} - \mu$, i.e. the average ratings given to the movie, minus the overall average rating. To avoid overtraining, it will be estimated using the training set only. We can see the estimates show a strong variability, as would be expected.  
+```{r movie effect, echo=FALSE}
+movie_avgs <- edx %>%
+  group_by(movieId) %>%
+  summarize(b_i = mean(rating - mu))
+
+movie_avgs %>%
+  ggplot(aes(x = b_i)) +
+  geom_histogram(bins = 10, color = "black") +
+  labs(x = "Estimated movie effect",
+       y = "Number of movies")
+```   
+The results are then compared to the actual outcomes on the test set, by considering that every user would give movies their estimated rating. 
+```{r movie effect pred, echo=FALSE}
+predicted_ratings <- mu + validation %>%
+  left_join(movie_avgs, by="movieId") %>%
+  pull(b_i)
+
+meffect_rmse <- RMSE(predicted_ratings, validation$rating)
+
+rmse_results <- bind_rows(rmse_results, tibble(method = "Movie effect model", RMSE = meffect_rmse))
+```
+This approach results in a RMSE of `r round(meffect_rmse, 3)`, showing an improvement over our initial estimate.  
+  
+### User effect  
+
+The next driver of variability we focus on is the user effect, which can be translated into the difference in rating scales between users. To include this in our model, we change the formula to:
+$$Y_{u,i} = \mu + b_i + b_u + \varepsilon_{u,i}$$
+where $b_u$ represents the difference in ratings given by user u compared to the overall expected ratings $\mu + b_i$.  
+Similarly to the movie effect, we will estimate it by looking at the average difference between ratings given by a user across all rated movies and the expected ratings for these movies. Again, as expected, the estimates show a significant variability.  
+```{r user effect, echo=FALSE}
+user_avgs <- edx %>%
+  left_join(movie_avgs, by="movieId") %>%
+  group_by(userId) %>%
+  summarize(b_u = mean(rating - mu - b_i))
+
+user_avgs %>%
+  ggplot(aes(b_u)) +
+  geom_histogram(bins = 10, color = "black") +
+  labs(x = "Estimated user effect",
+       y = "Number of users")
+```  
+These estimated user effects are then applied to our test set, and compared to the actual outcomes. 
+```{r user effect pred, echo=FALSE}
+predicted_ratings <- validation %>%
+  left_join(movie_avgs, by="movieId") %>%
+  left_join(user_avgs, by="userId") %>%
+  mutate(pred = mu + b_i + b_u) %>%
+  pull(pred)
+
+mueffect_rmse <- RMSE(predicted_ratings, validation$rating)
+
+rmse_results <- bind_rows(rmse_results, tibble(method = "Movie + user effect model", RMSE = mueffect_rmse))
+```
+This approach results in a RMSE of `r round(mueffect_rmse, 3)`, showing an improvement over our previous estimate. 
+  
+### Regularization  
+
+Despite the size of our data set, some movies have only been given very few ratings. 
+```{r movie rating few, echo=FALSE}
+less_than_5 <- movielens %>%
+  group_by(movieId, title) %>%
+  summarize(n = n()) %>%
+  filter(n <= 5) %>%
+  nrow()
+
+rm(movielens)
+```
+For instance, there were `r less_than_5` movies that were rated 5 times or less, which represents roughly `r round(less_than_5 / nmovies, 2) * 100` % of our sample! For these items with few data points, the average may be overly impacted by extreme ratings, and have a wider confidence interval when estimating the actual average, even more so if we look at a subset of the total data.  
+To mitigate this impact, we use regularization, to penalize large estimates that are formed using small sample sizes. For our model, we will consider using a penalized regression: instead of minimizing the least squares equation mentioned earlier, we will instead minimize a function which adds a penalty to the movie bias:
+$$\frac{1}{N}\sum_{u,i}{(Y_{u,i} - \mu - b_i)^2} + \lambda\sum_i{b_i^2}$$
+where the first term is the least squares equation, while the second term adds a penalty that gets larger the more $beta_i$ are large. To minimize this equation,
+$$\hat{b}_i(\lambda) = \frac{1}{\lambda + n_i}\sum_{u = 1}^{n_i}{(Y_{u,i} - \hat{\mu})}$$
+where $n_i$ is the number of ratings made for movie i.  
+The exact same approach can be taken for the user bias, with the equation we are looking to minimize being:
+$$\frac{1}{N}\sum_{u,i}{(Y_{u,i} - \mu - b_i - b_u)^2} + \lambda(\sum_i{b_i^2} + \sum_u{b_u^2})$$
+The next step is to estimate the adequate $\lambda$ for our model. This is done by looking for the value that would minimize RMSE in our training set. 
+```{r single lambda, echo=FALSE}
+lambdas <- seq(0, 1, length.out = 11)
+
+rmses <- sapply(lambdas, function(l){
+    b_i <- edx %>%
+      group_by(movieId) %>%
+      summarize(b_i = sum(rating - mu)/(n()+l))
+    
+    b_u <- edx %>%
+      left_join(b_i, by="movieId") %>%
+      group_by(userId) %>%
+      summarize(b_u = sum(rating - b_i - mu)/(n()+l))
+    
+    predicted_ratings <- edx %>%
+      left_join(b_i, by = "movieId") %>%
+      left_join(b_u, by = "userId") %>%
+      mutate(pred = mu + b_i + b_u) %>%
+      pull(pred)
+    
+    return(RMSE(predicted_ratings, edx$rating))
+})
+
+l <- lambdas[which.min(rmses)]
+```
+This is achieved when $\lambda$ is set to `r l`, as can be seen in the exhibit below.  
+```{r single lambda plot, echo=FALSE}
+qplot(x = lambdas, y = rmses) +
+  labs(x = "Lambdas", y = "RMSE on training set")
+```  
+
+We can now review our previous movie + user bias model, to include this regularization. 
+```{r single lambda model, echo=FALSE}
+b_i <- edx %>%
+  group_by(movieId) %>%
+  summarize(b_i = sum(rating - mu)/(n()+l))
+
+b_u <- edx %>%
+  left_join(b_i, by="movieId") %>%
+  group_by(userId) %>%
+  summarize(b_u = sum(rating - b_i - mu)/(n()+l))
+
+predicted_ratings <- validation %>%
+  left_join(b_i, by = "movieId") %>%
+  left_join(b_u, by = "userId") %>%
+  mutate(pred = mu + b_i + b_u) %>%
+  pull(pred)
+
+mpeffect_rmse <- RMSE(predicted_ratings, validation$rating)
+
+rmse_results <- bind_rows(rmse_results, tibble(method = "Movie + user effect model, penalised, single lambda", RMSE = mpeffect_rmse))
+```  
+This approach results in a RMSE of `r round(mpeffect_rmse, 3)`, showing an improvement over our previous estimate.  
+  
+A critic on this approach is that a single $\lambda$ is used for both the movie and user biases. Since we have no reason to say both should be equal, we can consider replicating the approach with separate values $\lambda_I$ and $\lambda_U$ for movie bias and user bias, respectively. The equation to minimize is then:
+$$\frac{1}{N}\sum_{u,i}{(Y_{u,i} - \mu - b_i - b_u)^2} + \lambda_I\sum_i{b_i^2} + \lambda_U\sum_u{b_u^2}$$  
+```{r separate lambda, echo=FALSE}
+lambdas_i <- seq(0, 5, length.out = 6)
+lambdas_u <- seq(0, 1, length.out = 6)
+lambdas_sep <- expand.grid(l_i = lambdas_i, l_u = lambdas_u)
+
+rmses <- apply(lambdas_sep, 1, function(l){
+  movie_avgs <- edx %>%
+    group_by(movieId) %>%
+    summarize(b_i = sum(rating - mu)/(n()+l[[1]]))
+  
+  user_avgs <- edx %>%
+    left_join(movie_avgs, by="movieId") %>%
+    group_by(userId) %>%
+    summarize(b_u = sum(rating - b_i - mu)/(n()+l[[2]]))
+  
+  predicted_ratings <- edx %>%
+    left_join(movie_avgs, by = "movieId") %>%
+    left_join(user_avgs, by = "userId") %>%
+    mutate(pred = mu + b_i + b_u) %>%
+    pull(pred)
+  
+  return(RMSE(predicted_ratings, edx$rating))
+})
+
+l_sep <- lambdas_sep[which.min(rmses),]
+```
+
+Using the same process as earlier, we get a value of `r l_sep[[1]]` for $\lambda_I$ and `r l_sep[[2]]` for $\lambda_U$. We can now again review our previous movie + user bias model, to include this regularization with separate values. 
+```{r separate lambda model, echo=FALSE}
+movie_avgs <- edx %>%
+  group_by(movieId) %>%
+  summarize(b_i = sum(rating - mu)/(n()+l_sep[[1]]))
+
+user_avgs <- edx %>%
+  left_join(movie_avgs, by="movieId") %>%
+  group_by(userId) %>%
+  summarize(b_u = sum(rating - b_i - mu)/(n()+l_sep[[2]]))
+
+predicted_ratings <- validation %>%
+  left_join(movie_avgs, by = "movieId") %>%
+  left_join(user_avgs, by = "userId") %>%
+  mutate(pred = mu + b_i + b_u) %>%
+  pull(pred)
+
+mupeffect_rmse <- RMSE(predicted_ratings, validation$rating)
+
+rmse_results <- bind_rows(rmse_results, tibble(method = "Movie + user effect model, penalised, separate lambda", RMSE = mupeffect_rmse))
+```
+This approach results in a RMSE of `r round(mupeffect_rmse, 3)`, which is almost identical to the value with a single $\lambda$.  
+  
+### Time effect  
+
+We noticed earlier that the rating of a movie was not stable through time. We can see a similar effect in the residuals from our regularized movie effect approach. To this end, we will be looking at data for the top 5 most rated movies in the total data set, using the average rating reported in the training set over successive 6-month time buckets. The size of the bucket was determined by finding the smallest time bucket where the average number of ratings reported per bucket was above 50, and the mean above 10, for the training set, as shown in the table below.  
+```{r time effect, echo=FALSE}
+time_b_table <- sapply(3:9, function(n){
+  edx %>%
+    mutate(month = round_date(as_datetime(timestamp), unit = paste(n, "months"))) %>%
+    group_by(movieId, month) %>%
+    summarize(n = n()) %>%
+    ungroup() %>%
+    summarize(mean = round(mean(n), 3),
+              median = median(n))
+})
+
+colnames(time_b_table) <- 3:9
+
+time_b_table %>% knitr::kable(caption = "Mean and median number of observations per movie and per time bucket",
+                             col.names = paste(3:9, "months"))
+```  
+Using 6 months as binwidth, we get the following data for residuals on the top 5 movies, in our training set.  
+```{r time effect example, echo=FALSE}
+edx_resids <- edx %>%
+  left_join(movie_avgs, by = "movieId") %>%
+  mutate(pred = mu + b_i,
+         resid = rating - pred)
+
+time_l <- "6 months"
+
+edx_resids %>%
+  filter(movieId %in% top_5_m) %>%
+  mutate(month = round_date(as_datetime(timestamp), unit = time_l),
+         movieId = as.factor(movieId)) %>%
+  group_by(movieId, month) %>%
+  summarize(mean = mean(resid)) %>%
+  ggplot(aes(x = month, y = mean, col = movieId)) +
+  geom_point() +
+  labs(x = "Review date", 
+       y = "Average residual rating")
+```  
+From this data, we can see that a time effect remains on the ratings that movies receive. We can adapt our movie effect model as follows  
+$$Y_{u,i} = \mu + b_i + b_i^T(t) + \varepsilon_{u,i}$$
+where $b_i^T(t)$ represents the actual time effect on the ratings for movie i on time t. For each of our 6-month-wide bins, we will approximate this value as the average residuals from the training set:
+$$\hat{b}_i^T(t) = \frac{1}{n_t}\sum_{u}{(Y_{u,i} - \mu - b_i)}$$
+with $n_t$ the number of ratings given to movie i during the 6 month bucket where time t is located.  
+```{r time effect model, echo=FALSE}
+movie_t_avg <- edx %>%
+  mutate(month = round_date(as_datetime(timestamp), unit = time_l)) %>%
+  left_join(movie_avgs, by = "movieId") %>%
+  group_by(movieId, month) %>%
+  summarize(b_i_t = mean(rating - mu - b_i)) %>%
+  ungroup()
+
+predicted_ratings <- validation %>%
+  mutate(month = round_date(as_datetime(timestamp), unit = time_l)) %>%
+  left_join(movie_avgs, by="movieId") %>%
+  left_join(movie_t_avg, by=c("movieId", "month")) %>%
+  mutate(b_i_t = ifelse(is.na(b_i_t), 0, b_i_t),
+         pred = mu + b_i + b_i_t) %>%
+  pull(pred)
+
+mteffect_rmse <- RMSE(predicted_ratings, validation$rating)
+
+rmse_results <- bind_rows(rmse_results, tibble(method = "Movie effect model, penalised, with time effect", RMSE = mteffect_rmse))
+```  
+Using these results to predict ratings on the test set, we get a RMSE of `r round(mteffect_rmse, 3)`, a slight improvement on the time-agnostic movie effect.  
+  
+Using the approach defined earlier, we can now re-assess the user bias, taking the movie-time effect into account, assuming our user bias regularization parameter $\lambda_U$ remains equal to 0.  
+```{r movie time effect + user model, echo=FALSE}
+user_avgs <- edx_resids %>%
+  mutate(month = round_date(as_datetime(timestamp), unit = time_l))%>%
+  left_join(movie_t_avg, by=c("movieId", "month")) %>%
+  group_by(userId) %>%
+  summarize(b_u = sum(rating - mu - b_i - b_i_t)/(n()+l_sep[[2]]))
+
+predicted_ratings <- validation %>%
+  mutate(month = round_date(as_datetime(timestamp), unit = time_l)) %>%
+  left_join(movie_avgs, by="movieId") %>%
+  left_join(movie_t_avg, by=c("movieId", "month")) %>%
+  left_join(user_avgs, by = "userId") %>%
+  mutate(b_i_t = ifelse(is.na(b_i_t), 0, b_i_t),
+         pred = mu + b_i + b_i_t + b_u) %>%
+  pull(pred)
+
+mtueffect_rmse <- RMSE(predicted_ratings, validation$rating)
+
+rmse_results <- bind_rows(rmse_results, tibble(method = "Movie (with time effect) + user effect model, penalised, separate lambdas", RMSE = mtueffect_rmse))
+```  
+Using this approach to predict ratings on the test set, we get a RMSE of `r round(mtueffect_rmse, 3)`, which is higher than the RMSE without time effect. This may be linked to movies with very few ratings, where the amplitude of the initial forecasting error is magnified by further weighing in the few residuals from the training set.  
+Despite its potential use in increasing the accuracy of our model to fit past data, the time effect as defined here would not be meaningful when predicting future ratings. It represents the impact past events have had on the rating scale of specific movies, and is hence used as a proxy for the impact of external, overall random, events. Given our inability to predict future events of this nature, we would need to set the value of time effect to 0 should we be looking to forecast ratings. Considering the increased RMSE and limited impact on a predictive model, we will not be considering the movie time effect in our final model.  
+```{r no time effect, echo=FALSE}
+movie_avgs <- edx %>%
+  group_by(movieId) %>%
+  summarize(b_i = sum(rating - mu)/(n()+l_sep[[1]]))
+
+user_avgs <- edx %>%
+  left_join(movie_avgs, by="movieId") %>%
+  group_by(userId) %>%
+  summarize(b_u = sum(rating - b_i - mu)/(n()+l_sep[[2]]))
+```  
+  
+### User genre bias  
+
+Among other possibilities, movies can be categorized according to their genre. When adequately used, it can be a powerful tool for users to find movies, as one likely has specific tastes in terms of movie genres. In our data set, we can see this in our residuals. To illustrate this point, we will look at the average residuals of the ratings given by the 3 most prolific users in our training sample across all genres.  
+```{r genre effect, echo=FALSE}
+invisible(gc())
+
+edx_genres <- edx %>% 
+  left_join(movie_avgs, by= "movieId") %>%
+  left_join(user_avgs, by = "userId") %>%
+  mutate(resid = rating - mu - b_i - b_u) %>% 
+  separate_rows(genres, sep = "\\|")
+
+top_3_u <- edx %>% group_by(userId) %>%
+  summarize(n = n()) %>%
+  slice_max(n = 3, order_by = n) %>%
+  pull(userId)
+
+edx_genres %>% 
+  filter(userId %in% top_3_u & 
+           genres != "(no genres listed)") %>%
+  group_by(userId, genres) %>%
+  mutate(userId = as.factor(userId)) %>%
+  ggplot(aes(x = genres, y = resid, col = userId)) +
+  geom_boxplot() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  labs(x = "Movie genre",
+       y = "Average residual ratings")
+```  
+As a reminder, if all genres were rated equally by the users, we would expect the residual values to be randomly distributed around 0, with a mean near 0. However, we can see in this data that a few genres seem to be polarizing for these 3 users:  
+
+* User 14463 seems to rate the documentary and film noir genres below the expected average 0  
+* User 67385 seems to rate the film noir genre higher than the expected average 0  
+
+Keeping in mind that these are the 3 most prolific users, it makes sense that they seem to enjoy several genres. Other less prolific users may have more firm favorite genres, which we can identify using data. We now consider the following formula:
+$$Y_{u,i} = \mu + b_i + b_u + \frac{1}{\sum_{k = 1}^{K}{x_{i,k}}}\sum_{k = 1}^{K}{x_{i,k}\beta_{u,k}} + \varepsilon_{u,i}$$
+where $x_{i,k}$ is a function that takes the value 1 if movie i is of genre k, and 0 otherwise, and $\beta_{u,k}$ represents the bias of user u towards genre k.  
+In order to estimate $\beta_{u,k}$, we will separate the rated movies by each user according to their respective genres, and compute the average of the residuals per genre for each user in the training set.  
+```{r genre effect model, echo=FALSE}
+genre_u_avg <- edx_genres %>%
+  group_by(userId, genres) %>%
+  summarize(b_g = mean(resid))
+```  
+To predict the ratings on the test set, we will first separate it along the genres, and assess the genre bias for each movie by each user. If a genre is missing in the training test, we will assume no bias (i.e. a residual of 0) for this specific genre, when computing the average.  
+```{r genre effect pred, echo=FALSE}
+validation_genres <- validation %>% 
+  left_join(movie_avgs, by="movieId") %>%
+  left_join(user_avgs, by = "userId") %>% 
+  separate_rows(genres, sep = "\\|")
+
+validation_genre_avg <- validation_genres %>%
+  left_join(genre_u_avg, by = c("userId", "genres")) %>%
+  mutate(b_g = ifelse(is.na(b_g), 0, b_g)) %>%
+  group_by(userId, movieId, timestamp) %>%
+  summarize(pred = mean(b_g)) %>%
+  pull(pred)
+
+predicted_ratings <- validation %>% 
+  left_join(movie_avgs, by="movieId") %>%
+  left_join(user_avgs, by = "userId") %>%
+  mutate(b_g = validation_genre_avg, 
+         pred = mu + b_i + b_u + b_g) %>%
+  pull(pred)
+
+mugeffect_rmse <- RMSE(predicted_ratings, validation$rating)
+
+rmse_results <- bind_rows(rmse_results, tibble(method = "Movie + user effect model + genre effect, penalised, separate lambdas", RMSE = mugeffect_rmse))
+
+rm(edx_genres, validation_genres, edx_resids)
+``` 
+This approach results in a RMSE of `r round(mugeffect_rmse, 3)`, an improvement over all our other models.  
+  
+### Constraining the results  
+
+Based on our understanding of the rating scale, we know that the movie ratings must be between 0 and 5. In the predicted ratings from our latest model, we see that `r format(sum(predicted_ratings > 5 | predicted_ratings < 0), big.mark = ",")` ratings fall outside of this interval. A minor way to improve our model is to constrain the outcome, by setting all negative values to 0, and all values higher than our rating scale's maximum to 5.  
+```{r constrained model, echo=FALSE}
+#Flooring and capping predicted ratings
+predicted_ratings <- ifelse(predicted_ratings < 0, 0,
+                            ifelse(predicted_ratings > 5, 5, 
+                                   predicted_ratings))
+
+mugceffect_rmse <- RMSE(predicted_ratings, validation$rating)
+
+rmse_results <- bind_rows(rmse_results, tibble(method = "Movie + user effect model + genre effect, penalised, separate lambdas, constrained", RMSE = mugceffect_rmse))
+```  
+This approach results in a RMSE of `r round(mugceffect_rmse, 3)`, a slight improvement over our previous approach. 
+  
+### Summary of results  
+
+To summarize, we have progressively improved our regression model, to land on:
+$$Y_{u,i} = \mu + b_i + b_u + \frac{1}{\sum_{k = 1}^{K}{x_{i,k}}}\sum_{k = 1}^{K}{x_{i,k}\beta_{u,k}} + \varepsilon_{u,i}$$
+which is a model that considers the mean rating, a movie-specific bias, a user-specific bias, and a genre-specific bias for each user.  
+The following table compares the results of our successive approaches:  
+```{r regression summary, echo=FALSE}
+rmse_results %>%
+  knitr::kable(caption = "RMSE for each model previously exposed",
+                             col.names = c("Model",
+                                           "RMSE"))
+```  
+We can nevertheless note that our best linear regression model becomes less accurate the further away from the mean the actual rating is, as shown in the following box plot (average rating in red).  
+```{r regression boxplot, echo=FALSE}
+validation %>%
+  bind_cols(pred = predicted_ratings) %>%
+  ggplot(aes(x = rating, y = pred, group = rating)) +
+  geom_boxplot() +
+  geom_hline(yintercept = mu, col = "red") +
+  labs(x = "Actual rating",
+       y = "Predicted rating")
+
+``` 
+  
+  
+## Matrix factorization  
+### Introduction  
+
+Matrix factorization methods, used in recommendation systems, aim to decompose a large ratings matrix ($R$) into the product of two matrices of lower dimensions ($P$ and $Q$). In our context, $P$ could be seen as a matrix representing the affinity of users to k specific dimensions, and $Q$ a matrix representing how much each of these k dimensions are representative for each individual movie. In other words, if we consider that $R_{n \times m}$ is the matrix representing all possible ratings by our `r format(nusers, big.mark = ",")` users on the `r format(nmovies, big.mark = ",")` movies in our sample, then we are looking for $P_{n \times k}$ and $Q_{m \times k}$ so that
+$$R_{n \times m} \approx P_{n \times k} \times Q_{m \times k}^T$$
+The k dimensions are called latent factors.  
+In that sense, the last version of our linear regression approach can be seen as a first step towards a matrix factorization model.  
+
+### Machine learning algorithm  
+
+We can use a machine learning algorithm to try and determine the optimal value of k, and then to create the smaller $P_{n \times k}$ and $Q_{m \times k}$ matrices, based on the known values of $R_{n*m}$. As previously, the training set will be used to train the algorithm, the accuracy of which will then be tested on the test set.  
+In R, several options are available when it comes to matrix factorization algorithms. A popular one is the `recommenderlab`. However, because it offers limited flexibility when it comes to defining custom training and test sets, we will look into another option.  
+The `recosystem` package is is an R wrapper of the `LIBMF` library developed by Yu-Chin Juan, Wei-Sheng Chin, Yong Zhuang, Bo-Wen Yuan, Meng-Yuan Yang, and Chih-Jen Lin, an open source library for recommender system using parallel matrix factorization. The algorithm is looking to find the solution to
+$$\displaystyle \min_{P,Q} \sum_{m,n}{[(r_{m,n}-\mathbf{p_m}\mathbf{q_n}^T)^2 + \lambda_p ||\mathbf{p_m}||^2 + \lambda_q ||\mathbf{q_n}||^2]}$$
+where $||.||$ is the euclidian norm, $(u,v) \in \mathbb{R^2}$ indicates that rating $r_{u,v}$ is available, $\lambda_p$ and $\lambda_q$ are regularization coefficients to avoid over-fitting errors.  
+The algorithm used in the `recosystem` package uses a parallel stochastic gradient approach to solve this equation. Its implementation in the `LIBMF` library and the `recosystem` package is built to optimize memory and CPU use, to reduce processing times without overloading the machine.  
+
+### Training the model  
+
+The first step in training the matrix factorization algorithm is to transform our training set to contain only the relevant information : user ID, movie ID, and rating. 
+```{r matrix factorization setup, echo=FALSE}
+library(recosystem)
+invisible(gc())
+
+edx_fact <- edx %>%
+  select(userId, movieId, rating)
+
+validation_fact <- validation %>%
+  select(userId, movieId, rating)
+``` 
+The model uses specific objects of class "Datasource", which we need to create next. 
+```{r matrix factorization objects, echo=FALSE}
+edx_set <- data_memory(user_index = edx_fact$userId,
+                       item_index = edx_fact$movieId,
+                       rating = edx_fact$rating)
+
+validation_set <- data_memory(user_index = validation_fact$userId,
+                              item_index = validation_fact$movieId,
+                              rating = validation_fact$rating)
+``` 
+  
+Once the data has been processed as required by the model, we will train the matrix-factorization-based recommendation system. While optional, we did set a random seed, for replicability purposes. For tuning purposes, we consider:  
+
+* Latent dimensions: 10, 20, 30, 40  
+* Learning rate, or the step size in gradient descent: 0.1, 0.2  
+* L1 regularization cost for user and item factors set to 0
+* L2 regularization cost for user and item factors: 0.01, 0.1  
+* 20 iterations  
+* We are also limiting the number of threads used to 8 (out of 12 available on the CPU used)  
+
+```{r matrix factorization training, echo=FALSE}
+set.seed(5)
+
+#Setup a RecoSys object
+r <- Reco()
+
+#Train the recosystem
+tuned_set <- r$tune(edx_set,
+                    opts = list(dim = seq(10, 40, 10),
+                                costp_l1 = 0, 
+                                costq_l1 = 0,
+                                lrate = c(0.1, 0.2),
+                                nthread = 8)) #12 threads available on the machine used
+
+r$train(edx_set,
+        opts = c(tuned_set$min,
+                 nthread = 8, #12 threads available on the machine used
+                 niter = 100,
+                 verbose = F))
+``` 
+Using this approach, the best tune, that we are using on our training set to train the algorithm, is the following:  
+
+* `r tuned_set$min$dim` latent dimensions  
+* `r tuned_set$min$costp_l2` L2 regularization cost for users  
+* `r tuned_set$min$costq_l2` L2 regularization cost for movies  
+* `r tuned_set$min$lrate` as learning rate  
+
+As for the previous approaches, we then use this model to predict the values in the test set. We also constrain the results to a $[0,5]$ scale.  
+```{r matrix factorization test, echo=FALSE}
+#Create the results vector and compare to actuals
+predicted_ratings <- r$predict(validation_set,
+                               out_memory())  
+
+predicted_ratings <- ifelse(predicted_ratings < 0, 0,
+                            ifelse(predicted_ratings > 5, 5, 
+                                   predicted_ratings))
+
+fmatrix_rmse <- RMSE(predicted_ratings, validation$rating)
+``` 
+This approach results in a RMSE of `r round(fmatrix_rmse, 3)`, a material improvement over our regression approach.  
+  
+# Conclusion
+## Summary
+
+```{r final summary table, echo=FALSE}
+#Create the results vector and compare to actuals
+rmse_results <- bind_rows(tibble(method = "Movie + user effect model + genre effect, penalised, separate lambdas", RMSE = mugeffect_rmse),
+                          tibble(method = "Matrix factorisation", RMSE = fmatrix_rmse))
+
+rm(tuned_set, validation_set, edx_set, validation_fact, edx_fact)
+``` 
+We have looked at two possible approaches to estimate the ratings a specific user in our user base would give to a specific movie in our library:  
+
+* One based on a linear regression, where we ended with an RMSE of `r round(mugeffect_rmse, 3)`  
+* One based on a matrix factorization, where we ended with an RMSE of `r round(fmatrix_rmse, 3)`  
+
+Of these two approaches, we can see the matrix factorization being the most accurate, and would prefer it over the linear regression approach should we need to be making predictions.  
+
+## Discussion
+
+As we initially saw, our analysis and model are based on a rather sparse matrix, with only `r round(sparsity, 3) * 100` % of the possible $\{user, movie\}$ couples having data available. The accuracy of our predictions may be impacted by this scarcity of information available, especially for movies or users with very few ratings overall.  
+As the database fills in, re-training either one of these models should help increase its overall accuracy.  
+As we noticed during the data exploration phase, the ratings expressed in our data set seem to contain a time-sensitive component. While we were not able to model it in a way to improve accuracy in our regression approach, finding a way to assess it would make the model more useful to use for future predictions / recommendations, by neutralizing this time effect when doing so. For the matrix factorization approach, it would also be useful to pre-process the data by neutralizing this time impact: using the time-neutral data frame would likely yield better results for future predictions / recommendations than one where ratings have been impacted by temporary external factors.  
+When defining the user-genre bias in our linear regression algorithm, the model proposed here does not consider regularization. A way to potentially improve the results of this approach would be to find and use a regularization parameter $\lambda_G$ for this item as well.  
+
+## Future work  
+
+As discussed, estimating, and neutralizing, the movie time impact would likely help increase the usability of either models. We would also explore potential user time impacts, to see whether the expected ratings given by users would vary through time, and either find predictable patterns or neutralize the impact.  
+For the linear regression approach, the next step would be to explore ways to estimate the remaining residuals, to try and improve our accuracy. We can see from the data that the further away from the mean the actual rating is, the less accurate our model becomes, which is something we could try to rectify.  
+  
+  
+# References  
+
+*Introduction to Data Science, R. A. Irizarry, 2021*  
+*The BellKor Solution to the Netflix Grand Prize, Y. Koren, 2009*  
+*A Fast Parallel Stochastic Gradient Method for Matrix Factorization in Shared Memory Systems, C. Wei-Sheng, Z. Yong, J. Yu-Chin, L. Chih-Jen, 2015*
+
