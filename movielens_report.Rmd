@@ -42,12 +42,12 @@ For the purposes of this project, the Movielens 10M data set will be used. This 
 ## Structure of the data  
 The Movielens 10M data set contains around 10 million observations, i.e. individual ratings, given by `r format(nusers, big.mark = ",")` users to a total of `r format(nmovies, big.mark = ",")`, each containing:
 
-* A unique user ID (integer)  
-* A unique movie ID (integer)  
-* A rating, on a scale from 0 to 5, with half decimals allowed from 2002 onward  
-* A timestamp, representing the date at which the rating was given (integer)  
-* A movie title, including the year of release between parentheses  
-* The genre or genres associated with the movie, each separated by a pipe symbol (|)  
+* A unique user ID (integer)
+* A unique movie ID (integer)
+* A rating, on a scale from 0 to 5, with half decimals allowed from 2002 onward
+* A timestamp, representing the date at which the rating was given (integer)
+* A movie title, including the year of release between parentheses
+* The genre or genres associated with the movie, each separated by a pipe symbol (|)
 
 ```{r age range, echo=FALSE}
 range_m <- movielens %>%
@@ -65,7 +65,7 @@ range_r <- movielens %>%
   range()
 ```
 
-## Overview or ratings given  
+## Overview of ratings given  
 The rated movies were released between `r range_m[1]` and `r range_m[2]`, and the ratings given between `r range_r[1]` and `r range_r[2]`. The ratings are distributed as follows, over the full sample:  
 ```{r ratings overview, echo=FALSE}
 movielens %>%
@@ -224,8 +224,8 @@ Having identified potential sources of variability in the ratings, we now move o
 # Modeling  
 Our aim in this section is to estimate the rating a user *u* will give to a movie *i*, for any couple $\{i, j\}$ in our data set. To this end, the data has been split into two subsets:  
 
-* A training set, containing 90% of the total observations, which will be used to train our algorithms  
-* A test set, containing the remaining 10% of the data, which will be used to assess how accurate our algorithms are.  
+* A training set, containing 90% of the total observations, which will be used to train our algorithms
+* A test set, containing the remaining 10% of the data, which will be used to assess how accurate our algorithms are.
 
 Give that we are not looking at categorical outcomes, but numerical ones (rating on a range from 0 to 5), we need to define what accuracy means, which will be done through a regression loss function: the residual mean squared error (RMSE). This function is defined as follows:  
 $$RMSE = \sqrt{\frac{1}{N}\sum_{u,i}{(\hat{y}_{u,i} - y_{u,i})^2}}$$
@@ -575,8 +575,8 @@ edx_genres %>%
 ```  
 As a reminder, if all genres were rated equally by the users, we would expect the residual values to be randomly distributed around 0, with a mean near 0. However, we can see in this data that a few genres seem to be polarizing for these 3 users:  
 
-* User 14463 seems to rate the documentary and film noir genres below the expected average 0  
-* User 67385 seems to rate the film noir genre higher than the expected average 0  
+* User 14463 seems to rate the documentary and film noir genres below the expected average 0
+* User 67385 seems to rate the film noir genre higher than the expected average 0
 
 Keeping in mind that these are the 3 most prolific users, it makes sense that they seem to enjoy several genres. Other less prolific users may have more firm favorite genres, which we can identify using data. We now consider the following formula:
 $$Y_{u,i} = \mu + b_i + b_u + \frac{1}{\sum_{k = 1}^{K}{x_{i,k}}}\sum_{k = 1}^{K}{x_{i,k}\beta_{u,k}} + \varepsilon_{u,i}$$
@@ -659,18 +659,18 @@ validation %>%
 ## Matrix factorization  
 ### Introduction  
 
-Matrix factorization methods, used in recommendation systems, aim to decompose a large ratings matrix ($R$) into the product of two matrices of lower dimensions ($P$ and $Q$). In our context, $P$ could be seen as a matrix representing the affinity of users to k specific dimensions, and $Q$ a matrix representing how much each of these k dimensions are representative for each individual movie. In other words, if we consider that $R_{n \times m}$ is the matrix representing all possible ratings by our `r format(nusers, big.mark = ",")` users on the `r format(nmovies, big.mark = ",")` movies in our sample, then we are looking for $P_{n \times k}$ and $Q_{m \times k}$ so that
-$$R_{n \times m} \approx P_{n \times k} \times Q_{m \times k}^T$$
+Matrix factorization methods, used in recommendation systems, aim to decompose a large ratings matrix ($R$) into the product of two matrices of lower dimensions ($P$ and $Q$). In our context, $P$ could be seen as a matrix representing the affinity of users to k specific dimensions, and $Q$ a matrix representing how much each of these k dimensions are representative for each individual movie. In other words, if we consider that $R_{m \times n}$ is the matrix representing all possible ratings by our `r format(nusers, big.mark = ",")` users on the `r format(nmovies, big.mark = ",")` movies in our sample, then we are looking for $P_{m \times k}$ and $Q_{n \times k}$ so that
+$$R_{m \times n} \approx P_{m \times k} \times Q_{n \times k}^T$$
 The k dimensions are called latent factors.  
 In that sense, the last version of our linear regression approach can be seen as a first step towards a matrix factorization model.  
 
 ### Machine learning algorithm  
 
-We can use a machine learning algorithm to try and determine the optimal value of k, and then to create the smaller $P_{n \times k}$ and $Q_{m \times k}$ matrices, based on the known values of $R_{n*m}$. As previously, the training set will be used to train the algorithm, the accuracy of which will then be tested on the test set.  
+We can use a machine learning algorithm to try and determine the optimal value of k, and then to create the smaller $P_{n \times k}$ and $Q_{m \times k}$ matrices, based on the known values of $R_{m \times n}$. As previously, the training set will be used to train the algorithm, the accuracy of which will then be tested on the test set.  
 In R, several options are available when it comes to matrix factorization algorithms. A popular one is the `recommenderlab`. However, because it offers limited flexibility when it comes to defining custom training and test sets, we will look into another option.  
 The `recosystem` package is is an R wrapper of the `LIBMF` library developed by Yu-Chin Juan, Wei-Sheng Chin, Yong Zhuang, Bo-Wen Yuan, Meng-Yuan Yang, and Chih-Jen Lin, an open source library for recommender system using parallel matrix factorization. The algorithm is looking to find the solution to
-$$\displaystyle \min_{P,Q} \sum_{m,n}{[(r_{m,n}-\mathbf{p_m}\mathbf{q_n}^T)^2 + \lambda_p ||\mathbf{p_m}||^2 + \lambda_q ||\mathbf{q_n}||^2]}$$
-where $||.||$ is the euclidian norm, $(u,v) \in \mathbb{R^2}$ indicates that rating $r_{u,v}$ is available, $\lambda_p$ and $\lambda_q$ are regularization coefficients to avoid over-fitting errors.  
+$$\displaystyle \min_{P,Q} \sum_{m,n}{{\Large[}(r_{m,n}-\mathbf{p_m}\mathbf{q_n}^T)^2 + \lambda_p ||\mathbf{p_m}||^2 + \lambda_q ||\mathbf{q_n}||^2{\Large]}}$$
+where $||\mathbf{.}||$ is the euclidian norm, $(m,n) \in \mathbb{R}^2$ indicates that rating $r_{m,n}$ is available, $\lambda_p$ and $\lambda_q$ are regularization coefficients to avoid over-fitting errors.  
 The algorithm used in the `recosystem` package uses a parallel stochastic gradient approach to solve this equation. Its implementation in the `LIBMF` library and the `recosystem` package is built to optimize memory and CPU use, to reduce processing times without overloading the machine.  
 
 ### Training the model  
@@ -699,12 +699,12 @@ validation_set <- data_memory(user_index = validation_fact$userId,
   
 Once the data has been processed as required by the model, we will train the matrix-factorization-based recommendation system. While optional, we did set a random seed, for replicability purposes. For tuning purposes, we consider:  
 
-* Latent dimensions: 10, 20, 30, 40  
-* Learning rate, or the step size in gradient descent: 0.1, 0.2  
+* Latent dimensions: 10, 20, 30, 40
+* Learning rate, or the step size in gradient descent: 0.1, 0.2
 * L1 regularization cost for user and item factors set to 0
-* L2 regularization cost for user and item factors: 0.01, 0.1  
-* 20 iterations  
-* We are also limiting the number of threads used to 8 (out of 12 available on the CPU used)  
+* L2 regularization cost for user and item factors: 0.01, 0.1
+* 20 iterations
+* We are also limiting the number of threads used to 8 (out of 12 available on the CPU used)
 
 ```{r matrix factorization training, echo=FALSE}
 set.seed(5)
@@ -728,10 +728,10 @@ r$train(edx_set,
 ``` 
 Using this approach, the best tune, that we are using on our training set to train the algorithm, is the following:  
 
-* `r tuned_set$min$dim` latent dimensions  
-* `r tuned_set$min$costp_l2` L2 regularization cost for users  
-* `r tuned_set$min$costq_l2` L2 regularization cost for movies  
-* `r tuned_set$min$lrate` as learning rate  
+* `r tuned_set$min$dim` latent dimensions
+* `r tuned_set$min$costp_l2` L2 regularization cost for users
+* `r tuned_set$min$costq_l2` L2 regularization cost for movies
+* `r tuned_set$min$lrate` as learning rate
 
 As for the previous approaches, we then use this model to predict the values in the test set. We also constrain the results to a $[0,5]$ scale.  
 ```{r matrix factorization test, echo=FALSE}
@@ -759,8 +759,8 @@ rm(tuned_set, validation_set, edx_set, validation_fact, edx_fact)
 ``` 
 We have looked at two possible approaches to estimate the ratings a specific user in our user base would give to a specific movie in our library:  
 
-* One based on a linear regression, where we ended with an RMSE of `r round(mugceffect_rmse, 3)`  
-* One based on a matrix factorization, where we ended with an RMSE of `r round(fmatrix_rmse, 3)`  
+* One based on a linear regression, where we ended with an RMSE of `r round(mugceffect_rmse, 3)`
+* One based on a matrix factorization, where we ended with an RMSE of `r round(fmatrix_rmse, 3)`
 
 Of these two approaches, we can see the matrix factorization being the most accurate, and would prefer it over the linear regression approach should we need to be making predictions.  
 
